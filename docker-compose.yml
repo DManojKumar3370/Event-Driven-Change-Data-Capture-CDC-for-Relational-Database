@@ -1,0 +1,89 @@
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: cdc-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_INIT_LIMIT: 5
+    networks:
+      - cdc-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: cdc-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    depends_on:
+      - zookeeper
+    networks:
+      - cdc-network
+
+  mysql:
+    image: mysql:8.0
+    container_name: cdc-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: cdc_db
+    volumes:
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - mysql_data:/var/lib/mysql
+    networks:
+      - cdc-network
+
+  cdc-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cdc-service
+    environment:
+      CDC_DB_HOST: mysql
+      CDC_DB_PORT: 3306
+      CDC_DB_USER: root
+      CDC_DB_PASSWORD: root_password
+      CDC_DB_NAME: cdc_db
+      CDC_TABLE_NAME: products
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: cdc_events
+      POLLING_INTERVAL: 5
+    depends_on:
+      - mysql
+      - kafka
+    networks:
+      - cdc-network
+    restart: on-failure
+
+  kafka-consumer:
+    image: python:3.11-slim
+    container_name: cdc-kafka-consumer
+    working_dir: /app
+    volumes:
+      - ./kafka-consumer:/app
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: cdc_events
+    depends_on:
+      - kafka
+    networks:
+      - cdc-network
+    restart: on-failure
+    command: sh -c "pip install --no-cache-dir kafka-python python-dotenv && python consumer.py"
+
+networks:
+  cdc-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+    driver: local
